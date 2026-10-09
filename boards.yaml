@@ -138,3 +138,9 @@ wavesharep4:
   name: Waveshare
   model: ESP32-P4-86-Panel-ETH-2RO
   status: experimental
+
+pw43p:
+  file: pw43p.yaml
+  name: PortWorld
+  model: YC-SM43P
+  status: experimental

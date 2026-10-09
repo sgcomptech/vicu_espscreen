@@ -1,0 +1,223 @@
+# ESP Screens / Tessera - PortWorld YC-SM43P
+# Experimental profile reconstructed from PortWorld's factory BSP and boot log.
+# Target: ESP32-S3, 480x480 ST7701S RGB panel, GT911 touch, TCA9555/NCA9555 expander.
+#
+# IMPORTANT: This has not yet been acceptance-tested on a YC-SM43P with Tessera.
+# The pin map/timing/init data are taken from the supplier firmware, but ESPHome's
+# mipi_rgb/ST7701S path is not byte-for-byte identical to PortWorld's ESP-IDF driver.
+
+packages:
+  hardware: !include ../hardware/esp32s3-rgb.yaml
+  cells: !include ../cells/6.yaml
+  look: !include ../looks/standard.yaml
+  touch: !include ../features/capacitive-touch.yaml
+  backlight: !include ../features/backlight.yaml
+  camera: !include ../features/camera.yaml
+  self_test: !include ../features/self-test.yaml
+  snapshot: !include ../features/snapshot.yaml
+
+substitutions:
+  BOARD_ID: "pw43p"
+  DEVICE_NAME: "pw43p-new"
+  DEVICE_FRIENDLY_NAME: "My PortWorld YC-SM43P"
+
+  PANEL_W: "480"
+  PANEL_H: "480"
+  DISPLAY_DPI: "158"
+
+  GRID_COLS: "2"
+  GRID_ROWS: "3"
+
+  SCREEN_MAX_TILES: "128"
+  SCREEN_MAX_PAGES: "24"
+  SCREEN_MAX_BAR_ITEMS: "12"
+
+  LVGL_BUFFER_SIZE: "25%"
+  BACKLIGHT_FREQUENCY: "5000Hz"
+
+esp32:
+  flash_size: 16MB
+
+logger:
+  tx_buffer_size: 2048
+  hardware_uart: UART0
+
+# Factory BSP creates the shared I2C master on SDA=GPIO15, SCL=GPIO7.
+# 100 kHz is a conservative first-test setting; the GT911 factory path uses
+# a 100000 Hz device clock. The TCA9555 can be raised later if desired.
+i2c:
+  id: touch_bus
+  sda: GPIO15
+  scl: GPIO7
+  frequency: 100kHz
+  scan: true
+
+# Factory firmware probes/creates the NCA9555/TCA9555-compatible expander at 0x20.
+tca9555:
+  - id: expander
+    address: 0x20
+    i2c_id: touch_bus
+
+# ST7701S configuration is a 3-wire write-only serial link carried by expander pins:
+#   P0.0 = CS, P0.3 = SDA/MOSI, P0.4 = SCL/CLK
+spi:
+  id: lcd
+  interface: software
+  clk_pin:
+    tca9555: expander
+    number: 4
+    allow_other_uses: true
+  mosi_pin:
+    tca9555: expander
+    number: 3
+    allow_other_uses: true
+
+# PortWorld's factory backlight is ordinary non-inverted LEDC on GPIO4 @ 5 kHz.
+# Disable ESPHome's default gamma so requested brightness maps directly to duty.
+light:
+  - id: !extend back_light
+    gamma_correct: 1.0
+
+output:
+  - platform: ledc
+    pin: GPIO4
+    id: gpio_backlight_pwm
+    frequency: ${BACKLIGHT_FREQUENCY}
+    min_power: 0.01
+    zero_means_zero: true
+
+  # Park the expander-hosted serial lines in a valid idle state before display
+  # initialisation. This mirrors Tessera's Waveshare 4B cold-start workaround.
+  - platform: gpio
+    id: lcd_select_idle
+    pin:
+      tca9555: expander
+      number: 0
+      allow_other_uses: true
+    inverted: true
+  - platform: gpio
+    id: lcd_data_idle
+    pin:
+      tca9555: expander
+      number: 3
+      allow_other_uses: true
+  - platform: gpio
+    id: lcd_clock_idle
+    pin:
+      tca9555: expander
+      number: 4
+      allow_other_uses: true
+
+# Factory firmware finds GT911 at 0x5D and reports mirror_x=0, mirror_y=0, swap_xy=0.
+# P0.1 is the touch reset line. No interrupt pin is required for the first test.
+touchscreen:
+  - platform: gt911
+    id: ts_touch
+    i2c_id: touch_bus
+    display: my_display
+    update_interval: 20ms
+    reset_pin:
+      tca9555: expander
+      number: 1
+# PortWorld factory RGB mapping (D0..D15):
+#   5,45,48,47,21,14,13,12,11,10,9,46,3,8,18,17
+# Control: PCLK=41 DE=40 VSYNC=39 HSYNC=38; DISP not connected.
+# Timing: pclk=20.6 MHz, H(pulse=8, back=80, front=80),
+#         V(pulse=2, back=30, front=18), pclk non-inverted.
+display:
+  - platform: mipi_rgb
+    model: ST7701S
+    id: my_display
+    spi_id: lcd
+    cs_pin:
+      tca9555: expander
+      number: 0
+      allow_other_uses: true
+    reset_pin:
+      tca9555: expander
+      number: 2
+    data_rate: 1MHz
+    spi_mode: MODE0
+
+    dimensions:
+      width: ${PANEL_W}
+      height: ${PANEL_H}
+
+    de_pin: GPIO40
+    pclk_pin: GPIO41
+    hsync_pin: GPIO38
+    vsync_pin: GPIO39
+
+    pclk_frequency: 20600000Hz
+    pclk_inverted: false
+    hsync_pulse_width: 8
+    hsync_back_porch: 80
+    hsync_front_porch: 80
+    vsync_pulse_width: 2
+    vsync_back_porch: 30
+    vsync_front_porch: 18
+
+    pixel_mode: 16bit
+    byte_order: little_endian
+    color_order: RGB
+    invert_colors: false
+
+    # Flat list is deliberately used so ESPHome maps these exactly as physical
+    # RGB D0..D15, matching the supplier firmware rather than re-grouping colors.
+    data_pins:
+      - GPIO5
+      - GPIO45
+      - GPIO48
+      - GPIO47
+      - GPIO21
+      - GPIO14
+      - GPIO13
+      - GPIO12
+      - GPIO11
+      - GPIO10
+      - GPIO9
+      - GPIO46
+      - GPIO3
+      - GPIO8
+      - GPIO18
+      - GPIO17
+
+    # PortWorld's external ST7701S table reconstructed from libboard_bsp.a.
+    # ESPHome's named ST7701S model runs its base table first; the commands below
+    # then overwrite the board-specific registers with PortWorld's values.
+    # SLEEP_OUT (0x11), PIXFMT (0x3A), MADCTL (0x36) and DISPLAY_ON (0x29)
+    # are omitted here because mipi_rgb appends those from pixel/color settings.
+    init_sequence:
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x10]
+      - [0xC0, 0x3B, 0x00]
+      - [0xC1, 0x0D, 0x02]
+      - [0xC2, 0x21, 0x08]
+      - [0xB0, 0x00, 0x11, 0x18, 0x0E, 0x11, 0x06, 0x07, 0x08, 0x07, 0x22, 0x04, 0x12, 0x0F, 0xAA, 0x31, 0x18]
+      - [0xB1, 0x00, 0x11, 0x19, 0x0E, 0x12, 0x07, 0x08, 0x08, 0x08, 0x22, 0x04, 0x11, 0x11, 0xA9, 0x32, 0x18]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x11]
+      - [0xB0, 0x60]
+      - [0xB1, 0x30]
+      - [0xB2, 0x87]
+      - [0xB3, 0x80]
+      - [0xB5, 0x49]
+      - [0xB7, 0x85]
+      - [0xB8, 0x21]
+      - [0xC1, 0x78]
+      - [0xC2, 0x78]
+      - delay 20ms
+      - [0xE0, 0x00, 0x1B, 0x02]
+      - [0xE1, 0x08, 0xA0, 0x00, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x44, 0x44]
+      - [0xE2, 0x11, 0x11, 0x44, 0x44, 0xED, 0xA0, 0x00, 0x00, 0xEC, 0xA0, 0x00, 0x00]
+      - [0xE3, 0x00, 0x00, 0x11, 0x11]
+      - [0xE4, 0x44, 0x44]
+      - [0xE5, 0x0A, 0xE9, 0xD8, 0xA0, 0x0C, 0xEB, 0xD8, 0xA0, 0x0E, 0xED, 0xD8, 0xA0, 0x10, 0xEF, 0xD8, 0xA0]
+      - [0xE6, 0x00, 0x00, 0x11, 0x11]
+      - [0xE7, 0x44, 0x44]
+      - [0xE8, 0x09, 0xE8, 0xD8, 0xA0, 0x0B, 0xEA, 0xD8, 0xA0, 0x0D, 0xEC, 0xD8, 0xA0, 0x0F, 0xEE, 0xD8, 0xA0]
+      - [0xEB, 0x02, 0x00, 0xE4, 0xE4, 0x88, 0x00, 0x40]
+      - [0xEC, 0x3C, 0x00]
+      - [0xED, 0xAB, 0x89, 0x76, 0x54, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x20, 0x45, 0x67, 0x98, 0xBA]
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x00]
+
+    update_interval: never
+    auto_clear_enabled: false
