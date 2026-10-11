@@ -23,7 +23,7 @@ substitutions:
   PANEL_W: "480"
   PANEL_H: "480"
   DISPLAY_DPI: "158"
-j
+
   GRID_COLS: "2"
   GRID_ROWS: "3"
 
